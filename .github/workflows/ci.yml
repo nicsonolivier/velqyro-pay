@@ -43,9 +43,9 @@ jobs:
       APP_ENCRYPTION_KEY: ZGV2LW9ubHktbmFvLXVzYXItZW0tcHJvZHVjYW8hISE=
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version-file: .nvmrc
 
@@ -77,7 +77,19 @@ jobs:
         run: npm run build -w @velqyro/api
 
       - name: API (testes unitários e de ponta a ponta)
-        run: npm run test -w @velqyro/api
+        run: npm run test -w @velqyro/api -- --json --outputFile=test-results.json
+
+      - name: Resumo dos testes da API
+        if: always()
+        working-directory: apps/api
+        run: |
+          node -e '
+            const fs = require("fs");
+            if (!fs.existsSync("test-results.json")) { console.log("::warning title=Testes da API::Os testes não chegaram a gerar resultado."); process.exit(0); }
+            const r = JSON.parse(fs.readFileSync("test-results.json", "utf8"));
+            const nivel = r.success ? "notice" : "error";
+            console.log(`::${nivel} title=Testes da API::${r.numPassedTests} de ${r.numTotalTests} testes passaram, em ${r.numPassedTestSuites} de ${r.numTotalTestSuites} arquivos.`);
+          '
 
       - name: Web (tipos e build)
         run: npm run build -w @velqyro/web
@@ -87,8 +99,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
         with:
           node-version-file: .nvmrc
       - run: npm install --no-audit --no-fund
