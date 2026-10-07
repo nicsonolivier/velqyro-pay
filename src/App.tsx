@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import Auth, { AuthView } from "./Auth";
 import Products from "./Products";
+import Checkout from "./Checkout";
 import {
   BadgeDollarSign,
   Boxes,
@@ -80,7 +81,7 @@ export default function App() {
         <Brand />
         <nav>
           {navItems.map(([label, Icon], index) => (
-            <button onClick={() => (label === "Visão geral" || label === "Produtos") && setPage(label)} className={page === label ? "nav-item active" : "nav-item"} key={label}>
+            <button onClick={() => (label === "Visão geral" || label === "Produtos" || label === "Checkout") && setPage(label)} className={page === label ? "nav-item active" : "nav-item"} key={label}>
               <Icon size={18} />
               <span>{label}</span>
             </button>
@@ -95,7 +96,7 @@ export default function App() {
       </aside>
 
       <section className="content">
-        {page === "Produtos" ? <Products /> : <>
+        {page === "Produtos" ? <Products /> : page === "Checkout" ? <Checkout /> : <>
         <header className="topbar">
           <div>
             <p className="eyebrow">VELQYRO PAY</p>
