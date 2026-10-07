@@ -47,21 +47,24 @@ Uma migration, `20261007000000_etapa1_fundacao`, com 10 tabelas: `users`, `sessi
 
 ## O que foi verificado e como
 
-O ambiente em que este código foi escrito não tinha acesso ao registro de pacotes (npm). Por isso parte da verificação ficou para o GitHub Actions.
+O ambiente em que este código foi escrito não tinha acesso ao registro de pacotes (npm). Por isso a instalação, o build e os testes rodaram no GitHub Actions, no pull request desta etapa. Todas as execuções terminaram sem falhas.
 
-| Item | Situação |
-| --- | --- |
-| Migration aplicada em PostgreSQL 16 real | Passou |
-| Gatilho da auditoria recusa `UPDATE` e `DELETE` | Passou |
-| Exclusão de usuário remove vínculos e preserva a auditoria | Passou |
-| Testes das regras compartilhadas (11) | Passaram |
-| Testes de senha, TOTP, cifra e tokens (9), com vetores das RFCs 4226 e 6238 | Passaram, em um executor local equivalente ao Jest |
-| Tipos da API e do painel | Conferidos com tipagens substitutas das bibliotecas; falta a conferência com as tipagens reais |
-| Telas novas (18 capturas em computador e 5 em celular) | Conferidas com dados simulados e bibliotecas substitutas; sem erros de página nem estouro de largura |
-| `npm install`, build da API e do painel | **Não executado.** Roda no GitHub Actions |
-| Testes de ponta a ponta da API (22 cenários) | **Escritos, não executados.** Rodam no GitHub Actions |
-| Conferência de que a migration bate com o `schema.prisma` | **Não executada.** A migration foi escrita à mão no formato do Prisma; o CI confere com `prisma migrate diff` |
-| Lint | **Não executado.** Roda no GitHub Actions |
+| Item | Onde rodou | Situação |
+| --- | --- | --- |
+| `npm install` com as dependências reais | GitHub Actions | Passou |
+| Testes das regras compartilhadas (11) | GitHub Actions e local | Passaram |
+| `prisma validate` | GitHub Actions | Passou |
+| Migration aplicada em PostgreSQL 16 | GitHub Actions e local | Passou |
+| Migration bate com o `schema.prisma` (`prisma migrate diff`) | GitHub Actions | Passou, sem diferença |
+| Tipos da API | GitHub Actions | Passou |
+| Build da API | GitHub Actions | Passou |
+| Testes da API: 31 em 3 arquivos (9 de senha, TOTP, cifra e tokens; 13 de autenticação; 9 de organizações, papéis e isolamento) | GitHub Actions | 31 de 31 passaram |
+| Tipos e build do painel | GitHub Actions | Passou |
+| Lint | GitHub Actions | Passou |
+| Gatilho da auditoria recusa `UPDATE` e `DELETE` | Local, em PostgreSQL 16 | Passou |
+| Exclusão de usuário remove vínculos e preserva a auditoria | Local, em PostgreSQL 16 | Passou |
+| Telas novas (18 capturas em computador e 5 em celular) | Local | Conferidas com uma API simulada; sem erros de página nem estouro de largura |
+| Painel no navegador ligado à API real | — | **Não executado.** Os testes da API cobrem as rotas e as capturas cobrem as telas, mas as duas partes ainda não foram usadas juntas em um navegador |
 
 ## Problemas encontrados
 
@@ -70,16 +73,17 @@ O ambiente em que este código foi escrito não tinha acesso ao registro de paco
 
 ## Riscos pendentes
 
-1. **Primeira execução do CI.** Como o build e os testes de ponta a ponta ainda não rodaram, é esperado que apareçam ajustes pequenos (tipagens, versões de dependências, formato da migration).
-2. **E-mail e SMS reais.** Só existe a caixa de saída. Antes de qualquer uso real é preciso ligar um provedor de envio.
-3. **RLS no PostgreSQL.** O isolamento entre organizações é aplicado na API. A segunda barreira, no banco, entra na Etapa 3.
-4. **Limite de requisições em memória.** Com mais de uma instância da API, precisa ir para o Redis.
-5. **Reuso de código TOTP** dentro da janela de 90 segundos. Corrigir antes das ações que exigem 2FA (saques).
-6. **Hash de senha.** scrypt atende a recomendação da OWASP; a troca para Argon2id está isolada em um arquivo.
-7. **Troca de e-mail e transferência de posse** ainda não existem.
-8. **Revisão jurídica/compliance.** Termos de uso, política de privacidade, LGPD e o modelo de KYC não foram tratados nesta etapa.
+1. **Sem `package-lock.json`.** O registro de pacotes estava bloqueado onde o código foi escrito, então o arquivo de trava não pôde ser gerado. Sem ele, cada instalação pode trazer versões um pouco diferentes. Rodar `npm install` uma vez na sua máquina e subir o `package-lock.json` gerado; depois disso o CI pode trocar `npm install` por `npm ci`.
+2. **Painel e API ainda não foram usados juntos em um navegador.** Vale um teste manual do cadastro até o convite de um membro antes de aprovar.
+3. **E-mail e SMS reais.** Só existe a caixa de saída. Antes de qualquer uso real é preciso ligar um provedor de envio.
+4. **RLS no PostgreSQL.** O isolamento entre organizações é aplicado na API. A segunda barreira, no banco, entra na Etapa 3.
+5. **Limite de requisições em memória.** Com mais de uma instância da API, precisa ir para o Redis.
+6. **Reuso de código TOTP** dentro da janela de 90 segundos. Corrigir antes das ações que exigem 2FA (saques).
+7. **Hash de senha.** scrypt atende a recomendação da OWASP; a troca para Argon2id está isolada em um arquivo.
+8. **Troca de e-mail e transferência de posse** ainda não existem.
+9. **Revisão jurídica/compliance.** Termos de uso, política de privacidade, LGPD e o modelo de KYC não foram tratados nesta etapa.
 
 ## Próximo passo recomendado
 
-1. Rodar o CI no pull request e corrigir o que aparecer.
+1. Revisar e aprovar o pull request desta etapa; subir o `package-lock.json`.
 2. Etapa 2: site público e onboarding com envio de documentos (KYC/KYB), incluindo o estado "KYC em análise".
