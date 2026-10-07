@@ -1,4 +1,5 @@
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
+import Auth, { AuthView } from "./Auth";
 import {
   BadgeDollarSign,
   Boxes,
@@ -60,10 +61,16 @@ function Brand() {
 }
 
 export default function App() {
+  const [authenticated, setAuthenticated] = useState(false);
+  const [authView, setAuthView] = useState<AuthView>("login");
   const bars = useMemo(
     () => [35, 48, 42, 62, 50, 67, 57, 76, 64, 71, 58, 83, 73, 91, 66, 80, 72, 88],
     []
   );
+
+  if (!authenticated) {
+    return <Auth view={authView} setView={setAuthView} onEnter={() => setAuthenticated(true)} />;
+  }
 
   return (
     <main className="shell">
