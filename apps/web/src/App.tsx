@@ -1,203 +1,107 @@
-import { useMemo, useState } from "react";
-import Auth, { AuthView } from "./Auth";
-import Products from "./Products";
+import { ReactNode } from "react";
+import { Navigate, Route, Routes, useLocation } from "react-router-dom";
+import { can } from "@velqyro/shared";
+import type { Area } from "@velqyro/shared";
+import Auth from "./Auth";
 import Checkout from "./Checkout";
-import Sales from "./Sales";
 import Customers from "./Customers";
 import Finance from "./Finance";
-import {
-  BadgeDollarSign,
-  Boxes,
-  ChartNoAxesCombined,
-  CircleDollarSign,
-  CreditCard,
-  Gauge,
-  LayoutDashboard,
-  Link2,
-  Package,
-  Settings,
-  ShoppingCart,
-  Users,
-  WalletCards,
-} from "lucide-react";
+import Products from "./Products";
+import Sales from "./Sales";
+import Shell from "./components/Shell";
+import { FullPageLoading } from "./components/ui";
+import { landingPath, pendingInvite, returnTo, useSession } from "./lib/session";
+import { AcceptInvite, ComingSoon, ConfirmEmailNotice, DevOutbox, NoPermission, NotFound, ResetPassword, VerifyEmail } from "./pages/Misc";
+import Overview from "./pages/Overview";
+import Settings from "./pages/Settings";
+import Team from "./pages/Team";
 
-type Metric = {
-  label: string;
-  value: string;
-  change: string;
-};
+/**
+ * Só para visitantes: quem já entrou segue para onde ia (ou para o painel).
+ * Quem está no meio do login (2FA pendente) é levado para a tela do código, sem perder o destino.
+ */
+function GuestOnly({ children }: { children: ReactNode }) {
+  const { status, me } = useSession();
+  const location = useLocation();
+  if (status === "loading") return <FullPageLoading />;
+  if (status === "twofactor") {
+    const from = returnTo(location.state);
+    return <Navigate to="/entrar/verificacao" replace state={from ? { from } : null} />;
+  }
+  if (status === "authenticated" && me) return <Navigate to={landingPath(location.state, me.user.email)} replace />;
+  return <>{children}</>;
+}
 
-const metrics: Metric[] = [
-  { label: "Saldo disponível", value: "R$ 18.420,70", change: "+12% no mês" },
-  { label: "A receber", value: "R$ 7.840,00", change: "+8% no mês" },
-  { label: "Vendas hoje", value: "R$ 2.974,00", change: "+24% hoje" },
-  { label: "Vendas no mês", value: "R$ 43.692,50", change: "+18% no mês" },
-];
+/** Exige sessão completa: login feito, 2FA concluído e e-mail confirmado. */
+function RequireAccount({ children, allowUnverified }: { children: ReactNode; allowUnverified?: boolean }) {
+  const { status, me } = useSession();
+  const location = useLocation();
+  if (status === "loading") return <FullPageLoading />;
+  const from = location.pathname + location.search;
+  if (status === "twofactor") return <Navigate to="/entrar/verificacao" replace state={{ from }} />;
+  if (status !== "authenticated" || !me) return <Navigate to="/entrar" replace state={{ from }} />;
+  if (!me.user.emailVerified && !allowUnverified) return <Navigate to="/confirmar-email" replace />;
+  if (me.user.emailVerified && allowUnverified) return <Navigate to="/" replace />;
+  return <>{children}</>;
+}
 
-const navItems = [
-  ["Visão geral", LayoutDashboard],
-  ["Produtos", Package],
-  ["Checkout", ShoppingCart],
-  ["Vendas", BadgeDollarSign],
-  ["Clientes", Users],
-  ["Financeiro", WalletCards],
-  ["Integrações", Link2],
-  ["API / Webhooks", Boxes],
-  ["Configurações", Settings],
-] as const;
-
-const transactions = [
-  ["João Silva", "Curso Premium", "R$ 297,00", "PIX", "Aprovado"],
-  ["Maria Oliveira", "Mentoria Individual", "R$ 997,00", "Cartão", "Aprovado"],
-  ["Carlos Souza", "Curso Iniciante", "R$ 197,00", "PIX", "Pendente"],
-  ["Ana Costa", "Pack Templates", "R$ 47,00", "Cartão", "Aprovado"],
-];
-
-function Brand() {
+/** Página do painel: exige organização e, quando informada, permissão na área. */
+function Panel({ area, children }: { area?: Area; children: ReactNode }) {
+  const { me, membership } = useSession();
   return (
-    <div className="brand">
-      <div className="brand-mark">V</div>
-      <div>
-        <strong>VELQYRO</strong>
-        <span>PAY</span>
-      </div>
-    </div>
+    <RequireAccount>
+      {membership ? (
+        <Shell>{area && !can(membership.role, area) ? <NoPermission role={membership.role} /> : children}</Shell>
+      ) : me ? (
+        // Sem organização: quem chegou por um convite volta para ele; os demais criam a primeira organização.
+        // A tela do convite apaga o endereço guardado ao abrir, então este desvio acontece uma vez só.
+        <Navigate to={pendingInvite.peek(me.user.email) ?? "/configuracao-inicial"} replace />
+      ) : null}
+    </RequireAccount>
   );
 }
 
+/** Tela do código do segundo fator: só existe enquanto o login está esperando por ele. */
+function TwoFactorGate() {
+  const { status, me } = useSession();
+  const location = useLocation();
+  if (status === "loading") return <FullPageLoading />;
+  if (status === "twofactor") return <Auth view="twofactor" />;
+  if (status === "authenticated" && me) return <Navigate to={landingPath(location.state, me.user.email)} replace />;
+  return <Navigate to="/entrar" replace />;
+}
+
 export default function App() {
-  const [authenticated, setAuthenticated] = useState(false);
-  const [authView, setAuthView] = useState<AuthView>("login");
-  const [page, setPage] = useState("Visão geral");
-  const bars = useMemo(
-    () => [35, 48, 42, 62, 50, 67, 57, 76, 64, 71, 58, 83, 73, 91, 66, 80, 72, 88],
-    []
-  );
-
-  if (!authenticated) {
-    return <Auth view={authView} setView={setAuthView} onEnter={() => setAuthenticated(true)} />;
-  }
-
   return (
-    <main className="shell">
-      <aside className="sidebar">
-        <Brand />
-        <nav>
-          {navItems.map(([label, Icon], index) => (
-            <button onClick={() => ["Visão geral","Produtos","Checkout","Vendas","Clientes","Financeiro"].includes(label) && setPage(label)} className={page === label ? "nav-item active" : "nav-item"} key={label}>
-              <Icon size={18} />
-              <span>{label}</span>
-            </button>
-          ))}
-        </nav>
+    <Routes>
+      <Route path="/entrar" element={<GuestOnly><Auth view="login" /></GuestOnly>} />
+      <Route path="/entrar/verificacao" element={<TwoFactorGate />} />
+      <Route path="/criar-conta" element={<GuestOnly><Auth view="register" /></GuestOnly>} />
+      <Route path="/recuperar-senha" element={<GuestOnly><Auth view="forgot" /></GuestOnly>} />
+      <Route path="/redefinir-senha" element={<ResetPassword />} />
+      <Route path="/verificar-email" element={<VerifyEmail />} />
+      <Route path="/confirmar-email" element={<RequireAccount allowUnverified><ConfirmEmailNotice /></RequireAccount>} />
+      <Route path="/configuracao-inicial" element={<RequireAccount><Auth view="onboarding" /></RequireAccount>} />
+      <Route path="/convite/:token" element={<AcceptInvite />} />
+      {import.meta.env.DEV && <Route path="/dev/caixa-de-saida" element={<DevOutbox />} />}
 
-        <div className="upgrade-card">
-          <span className="eyebrow">PLANO PRO</span>
-          <strong>Até 10.000 vendas/mês</strong>
-          <button>Fazer upgrade</button>
-        </div>
-      </aside>
-
-      <section className="content">
-        {page === "Produtos" ? <Products /> : page === "Checkout" ? <Checkout /> : page === "Vendas" ? <Sales /> : page === "Clientes" ? <Customers /> : page === "Financeiro" ? <Finance /> : <>
-        <header className="topbar">
-          <div>
-            <p className="eyebrow">VELQYRO PAY</p>
-            <h1>Olá, Nicson 👋</h1>
-            <p className="muted">Aqui está o resumo do seu negócio hoje.</p>
-          </div>
-          <div className="period">01 Out 2026 — 07 Out 2026</div>
-        </header>
-
-        <section className="metric-grid">
-          {metrics.map((metric, index) => (
-            <article className="metric-card" key={metric.label}>
-              <div className="metric-icon">
-                {[CircleDollarSign, CreditCard, ChartNoAxesCombined, Gauge].map((Icon, i) =>
-                  i === index ? <Icon size={20} key={i} /> : null
-                )}
-              </div>
-              <span>{metric.label}</span>
-              <strong>{metric.value}</strong>
-              <small>{metric.change}</small>
-            </article>
-          ))}
-        </section>
-
-        <section className="insights-grid">
-          <article className="panel chart-panel">
-            <div className="panel-head">
-              <div>
-                <p className="eyebrow">PERFORMANCE</p>
-                <h2>Vendas nos últimos 30 dias</h2>
-              </div>
-              <span className="pill">Últimos 30 dias</span>
-            </div>
-            <div className="chart">
-              {bars.map((height, index) => (
-                <div className="bar-wrap" key={index}>
-                  <div className="bar" style={{ height: `${height}%` }} />
-                </div>
-              ))}
-            </div>
-          </article>
-
-          <article className="panel payment-panel">
-            <div className="panel-head">
-              <div>
-                <p className="eyebrow">PAGAMENTOS</p>
-                <h2>Métodos</h2>
-              </div>
-            </div>
-            <div className="donut" aria-label="52% Pix, 38% cartão, 10% outros">
-              <div className="donut-center">
-                <strong>52%</strong>
-                <span>PIX</span>
-              </div>
-            </div>
-            <div className="legend">
-              <span><i className="dot purple" />PIX <b>52%</b></span>
-              <span><i className="dot cyan" />Cartão <b>38%</b></span>
-              <span><i className="dot gray" />Outros <b>10%</b></span>
-            </div>
-          </article>
-        </section>
-
-        <section className="panel">
-          <div className="panel-head">
-            <div>
-              <p className="eyebrow">ATIVIDADE</p>
-              <h2>Últimas transações</h2>
-            </div>
-            <button className="ghost-button">Ver todas</button>
-          </div>
-          <div className="table-wrap">
-            <table>
-              <thead>
-                <tr>
-                  <th>Cliente</th>
-                  <th>Produto</th>
-                  <th>Valor</th>
-                  <th>Método</th>
-                  <th>Status</th>
-                </tr>
-              </thead>
-              <tbody>
-                {transactions.map(([client, product, value, method, status]) => (
-                  <tr key={client}>
-                    <td>{client}</td>
-                    <td>{product}</td>
-                    <td>{value}</td>
-                    <td>{method}</td>
-                    <td><span className={status === "Aprovado" ? "status ok" : "status pending"}>{status}</span></td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </section>
-        </>}
-      </section>
-    </main>
+      <Route path="/" element={<Panel area="dashboard"><Overview /></Panel>} />
+      <Route path="/produtos" element={<Panel area="catalog"><Products /></Panel>} />
+      <Route path="/checkout" element={<Panel area="catalog"><Checkout /></Panel>} />
+      <Route path="/vendas" element={<Panel area="orders"><Sales /></Panel>} />
+      <Route path="/clientes" element={<Panel area="orders"><Customers /></Panel>} />
+      <Route path="/financeiro" element={<Panel area="balance"><Finance /></Panel>} />
+      <Route
+        path="/integracoes"
+        element={<Panel area="developers"><ComingSoon title="Integrações" stage="Etapa 6" text="WhatsApp, e-mail transacional, ERPs e lojas virtuais. A estrutura fica preparada e as conexões entram depois." /></Panel>}
+      />
+      <Route
+        path="/api-webhooks"
+        element={<Panel area="developers"><ComingSoon title="API / Webhooks" stage="Etapa 6" text="Chaves de API, webhooks assinados, logs e Sandbox para desenvolvedores." /></Panel>}
+      />
+      <Route path="/equipe" element={<Panel area="team"><Team /></Panel>} />
+      <Route path="/configuracoes" element={<Panel><Settings /></Panel>} />
+      <Route path="*" element={<NotFound />} />
+    </Routes>
   );
 }
