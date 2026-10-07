@@ -1,23 +1,30 @@
 {
   "name": "velqyro-pay",
   "private": true,
-  "version": "0.1.0",
-  "type": "module",
+  "version": "0.2.0",
+  "description": "VELQYRO PAY: plataforma de pagamentos (monólito modular).",
+  "engines": { "node": ">=22.12" },
+  "workspaces": ["packages/*", "apps/*"],
   "scripts": {
-    "dev": "vite",
-    "build": "tsc -b && vite build",
-    "preview": "vite preview"
-  },
-  "dependencies": {
-    "@vitejs/plugin-react": "^4.3.4",
-    "lucide-react": "^0.468.0",
-    "react": "^18.3.1",
-    "react-dom": "^18.3.1",
-    "vite": "^6.0.5"
+    "dev": "npm run build -w @velqyro/shared && concurrently -n api,web -c magenta,cyan \"npm run dev -w @velqyro/api\" \"npm run dev -w @velqyro/web\"",
+    "dev:api": "npm run build -w @velqyro/shared && npm run dev -w @velqyro/api",
+    "dev:web": "npm run dev -w @velqyro/web",
+    "build": "npm run build -w @velqyro/shared && npm run build -w @velqyro/api && npm run build -w @velqyro/web",
+    "typecheck": "npm run build -w @velqyro/shared && npm run typecheck -w @velqyro/api && npm run typecheck -w @velqyro/web",
+    "lint": "eslint .",
+    "test": "npm run test -w @velqyro/shared && npm run test -w @velqyro/api",
+    "db:up": "docker compose -f infrastructure/docker/docker-compose.yml up -d",
+    "db:down": "docker compose -f infrastructure/docker/docker-compose.yml down",
+    "db:migrate": "npm run db:migrate -w @velqyro/api",
+    "db:deploy": "npm run db:deploy -w @velqyro/api",
+    "db:seed": "npm run db:seed -w @velqyro/api"
   },
   "devDependencies": {
-    "@types/react": "^18.3.18",
-    "@types/react-dom": "^18.3.5",
-    "typescript": "^5.7.2"
+    "@eslint/js": "^9.17.0",
+    "concurrently": "^9.1.0",
+    "eslint": "^9.17.0",
+    "globals": "^15.13.0",
+    "typescript": "^5.7.2",
+    "typescript-eslint": "^8.18.0"
   }
 }

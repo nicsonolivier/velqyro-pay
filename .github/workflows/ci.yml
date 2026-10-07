@@ -1,0 +1,117 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  verificar:
+    name: Build, migrations e testes
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: velqyro
+          POSTGRES_PASSWORD: velqyro_dev
+          POSTGRES_DB: velqyro_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U velqyro -d velqyro_test"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 20
+
+    env:
+      DATABASE_URL: postgresql://velqyro:velqyro_dev@localhost:5432/velqyro_test?schema=public
+      TEST_DATABASE_URL: postgresql://velqyro:velqyro_dev@localhost:5432/velqyro_test?schema=public
+      SHADOW_DATABASE_URL: postgresql://velqyro:velqyro_dev@localhost:5432/velqyro_shadow?schema=public
+      APP_URL: http://localhost:5173
+      WEB_ORIGINS: http://localhost:5173
+      # Chave pública de desenvolvimento, usada só para os testes.
+      APP_ENCRYPTION_KEY: ZGV2LW9ubHktbmFvLXVzYXItZW0tcHJvZHVjYW8hISE=
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version-file: .nvmrc
+
+      - name: Instalar dependências
+        run: npm install --no-audit --no-fund
+
+      - name: Regras compartilhadas (build e testes)
+        run: npm run test -w @velqyro/shared
+
+      - name: Schema do Prisma válido
+        run: npx prisma validate
+        working-directory: apps/api
+
+      - name: Aplicar migrations
+        run: npx prisma migrate deploy
+        working-directory: apps/api
+
+      - name: Criar o banco auxiliar da conferência de migrations
+        run: psql "postgresql://velqyro:velqyro_dev@localhost:5432/velqyro_test" -c 'CREATE DATABASE velqyro_shadow'
+
+      - name: Migrations em dia com o schema
+        run: npx prisma migrate diff --from-migrations prisma/migrations --to-schema-datamodel prisma/schema.prisma --shadow-database-url "$SHADOW_DATABASE_URL" --exit-code
+        working-directory: apps/api
+
+      - name: API (tipos)
+        run: npm run typecheck -w @velqyro/api
+
+      - name: API (build)
+        run: npm run build -w @velqyro/api
+
+      - name: API (testes unitários e de ponta a ponta)
+        run: npm run test -w @velqyro/api -- --json --outputFile=test-results.json
+
+      - name: Resumo dos testes da API
+        if: always()
+        working-directory: apps/api
+        run: |
+          node -e '
+            const fs = require("fs");
+            if (!fs.existsSync("test-results.json")) { console.log("::warning title=Testes da API::Os testes não chegaram a gerar resultado."); process.exit(0); }
+            const r = JSON.parse(fs.readFileSync("test-results.json", "utf8"));
+            const limpa = (t) => String(t).replace(/\u001b\[[0-9;]*m/g, "").replace(/\r?\n/g, "%0A").slice(0, 1500);
+            for (const arquivo of r.testResults) {
+              const nome = arquivo.name.split("/apps/api/").pop();
+              if (arquivo.status === "failed" && !arquivo.assertionResults.length) console.log(`::error title=${nome}::${limpa(arquivo.message)}`);
+              for (const t of arquivo.assertionResults) {
+                if (t.status === "failed") console.log(`::error title=${nome}::${limpa(t.fullName + " — " + (t.failureMessages || []).join(" "))}`);
+              }
+            }
+            const nivel = r.success ? "notice" : "error";
+            console.log(`::${nivel} title=Testes da API::${r.numPassedTests} de ${r.numTotalTests} testes passaram, em ${r.numPassedTestSuites} de ${r.numTotalTestSuites} arquivos.`);
+          '
+
+      - name: Web (tipos e build)
+        run: npm run build -w @velqyro/web
+
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version-file: .nvmrc
+      - run: npm install --no-audit --no-fund
+      - run: npm run build -w @velqyro/shared
+      - run: npm run db:generate -w @velqyro/api
+      - run: npm run lint

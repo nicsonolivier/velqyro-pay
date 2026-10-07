@@ -1,0 +1,94 @@
+import type { AccountState, OrganizationStatus, OrganizationType, Role, Segment } from "@velqyro/shared";
+
+export interface OrganizationSummary {
+  id: string;
+  name: string;
+  legalName: string;
+  type: OrganizationType;
+  /** Já vem mascarado da API. */
+  document: string;
+  segment: Segment;
+  status: OrganizationStatus;
+}
+
+export interface Membership {
+  id: string;
+  role: Role;
+  organization: OrganizationSummary;
+}
+
+export interface SessionUser {
+  id: string;
+  name: string;
+  email: string;
+  phone: string;
+  emailVerified: boolean;
+  phoneVerified: boolean;
+  twoFactorEnabled: boolean;
+  createdAt: string;
+}
+
+/** Quem está logado, com o login completo (senha e, quando ativo, o segundo fator). */
+export interface Me {
+  user: SessionUser;
+  session: { id: string; twoFactorPending: false };
+  accountState: AccountState;
+  memberships: Membership[];
+}
+
+/**
+ * Resposta de /auth/me enquanto o login espera o código do segundo fator.
+ * A API não devolve nenhum dado da conta antes de o código ser conferido.
+ */
+export interface PendingTwoFactor {
+  user: null;
+  session: { id: string; twoFactorPending: true };
+  memberships: [];
+}
+
+export type MeResponse = Me | PendingTwoFactor;
+
+export interface Member {
+  id: string;
+  role: Role;
+  since: string;
+  user: { id: string; name: string; email: string };
+}
+
+export interface Invitation {
+  id: string;
+  email: string;
+  role: Role;
+  createdAt: string;
+  expiresAt: string;
+  expired: boolean;
+}
+
+export interface AuditItem {
+  id: string;
+  actor: string;
+  action: string;
+  resource: string;
+  resourceId: string | null;
+  ip: string | null;
+  metadata: Record<string, unknown>;
+  createdAt: string;
+}
+
+export interface SessionItem {
+  id: string;
+  current: boolean;
+  ip: string | null;
+  userAgent: string | null;
+  createdAt: string;
+  lastSeenAt: string;
+}
+
+export interface OutboxMessage {
+  id: string;
+  channel: "EMAIL" | "SMS";
+  recipient: string;
+  subject: string;
+  body: string;
+  createdAt: string;
+}
