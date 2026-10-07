@@ -1,0 +1,229 @@
+// Schema da Etapa 1 (Fundação): identidade, sessões, organizações, papéis e auditoria.
+// Tabelas de negócio (produtos, pedidos, pagamentos, livro-razão) entram nas etapas 3 a 5.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum OrganizationType {
+  PF
+  PJ
+}
+
+enum OrganizationSegment {
+  ONLINE
+  CREATOR
+  LOCAL
+  ECOMMERCE
+}
+
+enum OrganizationStatus {
+  KYC_PENDING
+  KYC_REVIEW
+  ACTIVE
+  RESTRICTED
+  SUSPENDED
+}
+
+enum MemberRole {
+  OWNER
+  ADMIN
+  FINANCE
+  DEVELOPER
+  SUPPORT
+  VIEWER
+}
+
+enum VerificationType {
+  EMAIL_VERIFY
+  PHONE_VERIFY
+  PASSWORD_RESET
+}
+
+enum OutboxChannel {
+  EMAIL
+  SMS
+}
+
+model User {
+  id               String    @id @default(uuid()) @db.Uuid
+  name             String
+  email            String    @unique
+  phone            String
+  passwordHash     String    @map("password_hash")
+  emailVerifiedAt  DateTime? @map("email_verified_at")
+  phoneVerifiedAt  DateTime? @map("phone_verified_at")
+  failedLoginCount Int       @default(0) @map("failed_login_count")
+  lockedUntil      DateTime? @map("locked_until")
+  lastLoginAt      DateTime? @map("last_login_at")
+  termsAcceptedAt  DateTime  @map("terms_accepted_at")
+  createdAt        DateTime  @default(now()) @map("created_at")
+  updatedAt        DateTime  @updatedAt @map("updated_at")
+
+  sessions           Session[]
+  verificationTokens VerificationToken[]
+  twoFactor          TwoFactorMethod?
+  recoveryCodes      RecoveryCode[]
+  memberships        OrganizationMember[]
+  invitationsSent    Invitation[]
+
+  @@map("users")
+}
+
+model Session {
+  id          String    @id @default(uuid()) @db.Uuid
+  userId      String    @map("user_id") @db.Uuid
+  tokenHash   String    @unique @map("token_hash")
+  mfaPending  Boolean   @default(false) @map("mfa_pending")
+  mfaAttempts Int       @default(0) @map("mfa_attempts")
+  ip          String?
+  userAgent   String?   @map("user_agent")
+  createdAt   DateTime  @default(now()) @map("created_at")
+  lastSeenAt  DateTime  @default(now()) @map("last_seen_at")
+  expiresAt   DateTime  @map("expires_at")
+  revokedAt   DateTime? @map("revoked_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("sessions")
+}
+
+model VerificationToken {
+  id        String           @id @default(uuid()) @db.Uuid
+  userId    String           @map("user_id") @db.Uuid
+  type      VerificationType
+  tokenHash String           @map("token_hash")
+  target    String
+  attempts  Int              @default(0)
+  expiresAt DateTime         @map("expires_at")
+  usedAt    DateTime?        @map("used_at")
+  createdAt DateTime         @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([type, tokenHash])
+  @@index([userId, type])
+  @@map("verification_tokens")
+}
+
+model TwoFactorMethod {
+  id              String    @id @default(uuid()) @db.Uuid
+  userId          String    @unique @map("user_id") @db.Uuid
+  secretEncrypted String    @map("secret_encrypted")
+  // Último passo de tempo do TOTP já aceito: o mesmo código não vale duas vezes.
+  lastUsedStep    Int?      @map("last_used_step")
+  enabledAt       DateTime? @map("enabled_at")
+  createdAt       DateTime  @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("two_factor_methods")
+}
+
+model RecoveryCode {
+  id        String    @id @default(uuid()) @db.Uuid
+  userId    String    @map("user_id") @db.Uuid
+  codeHash  String    @map("code_hash")
+  usedAt    DateTime? @map("used_at")
+  createdAt DateTime  @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("recovery_codes")
+}
+
+model Organization {
+  id        String              @id @default(uuid()) @db.Uuid
+  name      String
+  legalName String              @map("legal_name")
+  type      OrganizationType
+  document  String
+  segment   OrganizationSegment
+  status    OrganizationStatus  @default(KYC_PENDING)
+  createdAt DateTime            @default(now()) @map("created_at")
+  updatedAt DateTime            @updatedAt @map("updated_at")
+
+  members     OrganizationMember[]
+  invitations Invitation[]
+
+  // Sem unicidade: antes do KYC ninguém provou ser dono do documento (ver OrganizationsService.create).
+  @@index([document])
+  @@map("organizations")
+}
+
+model OrganizationMember {
+  id             String     @id @default(uuid()) @db.Uuid
+  organizationId String     @map("organization_id") @db.Uuid
+  userId         String     @map("user_id") @db.Uuid
+  role           MemberRole
+  createdAt      DateTime   @default(now()) @map("created_at")
+  updatedAt      DateTime   @updatedAt @map("updated_at")
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  // Restrict: excluir um usuário nunca remove em silêncio o proprietário de uma organização.
+  user         User         @relation(fields: [userId], references: [id], onDelete: Restrict)
+
+  @@unique([organizationId, userId])
+  @@index([userId])
+  @@map("organization_members")
+}
+
+model Invitation {
+  id             String     @id @default(uuid()) @db.Uuid
+  organizationId String     @map("organization_id") @db.Uuid
+  email          String
+  role           MemberRole
+  tokenHash      String     @unique @map("token_hash")
+  invitedById    String?    @map("invited_by_id") @db.Uuid
+  expiresAt      DateTime   @map("expires_at")
+  acceptedAt     DateTime?  @map("accepted_at")
+  revokedAt      DateTime?  @map("revoked_at")
+  createdAt      DateTime   @default(now()) @map("created_at")
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  invitedBy    User?        @relation(fields: [invitedById], references: [id], onDelete: SetNull)
+
+  @@index([organizationId])
+  @@index([email])
+  @@map("invitations")
+}
+
+// Somente inserção: gatilhos no banco recusam UPDATE, DELETE e TRUNCATE (ver a migration).
+// Sem chaves estrangeiras de propósito, para o registro sobreviver à exclusão de usuários e organizações.
+model AuditLog {
+  id             String   @id @default(uuid()) @db.Uuid
+  actorUserId    String?  @map("actor_user_id") @db.Uuid
+  actorLabel     String   @map("actor_label")
+  organizationId String?  @map("organization_id") @db.Uuid
+  action         String
+  resource       String
+  resourceId     String?  @map("resource_id")
+  ip             String?
+  userAgent      String?  @map("user_agent")
+  metadata       Json     @default("{}")
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  @@index([organizationId, createdAt])
+  @@index([actorUserId, createdAt])
+  @@map("audit_logs")
+}
+
+// Caixa de saída de desenvolvimento: e-mails e SMS ficam aqui em vez de serem enviados.
+model OutboxMessage {
+  id        String        @id @default(uuid()) @db.Uuid
+  channel   OutboxChannel
+  recipient String
+  subject   String
+  body      String
+  createdAt DateTime      @default(now()) @map("created_at")
+
+  @@index([createdAt])
+  @@map("outbox_messages")
+}
