@@ -1,0 +1,251 @@
+import { totp } from "../src/crypto/totp";
+import { createOrganization, CNPJS, extract, lastMessage, PASSWORD, signUp, startTestApp, TestApp } from "./helpers";
+
+describe("Autenticação (ponta a ponta)", () => {
+  let t: TestApp;
+  beforeAll(async () => {
+    t = await startTestApp();
+  });
+  afterAll(async () => {
+    await t.close();
+  });
+
+  it("responde no health check e devolve um ID de requisição", async () => {
+    const res = await t.browser().get("/api/health").expect(200);
+    expect(res.body).toEqual({ status: "ok", database: "ok" });
+    expect(res.headers["x-request-id"]).toBeTruthy();
+  });
+
+  it("recusa rotas protegidas sem sessão, com erro padronizado em português", async () => {
+    const res = await t.browser().get("/api/auth/me").expect(401);
+    expect(res.body.error.code).toEqual("nao_autenticado");
+    expect(typeof res.body.error.message).toEqual("string");
+    expect(res.body.requestId).toBeTruthy();
+  });
+
+  it("valida o cadastro campo a campo e recusa campos desconhecidos", async () => {
+    const res = await t.browser().post("/api/auth/register").send({ name: "Ana", email: "nao-e-email", phone: "123", password: "curta", acceptTerms: false }).expect(400);
+    expect(res.body.error.code).toEqual("parametro_invalido");
+    expect(Object.keys(res.body.error.fields).sort()).toEqual(["acceptTerms", "email", "name", "password", "phone"]);
+
+    const extra = await t
+      .browser()
+      .post("/api/auth/register")
+      .send({ name: "Ana Lima", email: "ana@exemplo.com", phone: "(11) 91234-5678", password: PASSWORD, acceptTerms: true, role: "admin" })
+      .expect(400);
+    expect(extra.body.error.code).toEqual("parametro_invalido");
+  });
+
+  it("cadastra, exige confirmar o e-mail antes de criar organização e guarda a senha só como hash", async () => {
+    const agent = t.browser();
+    const res = await agent
+      .post("/api/auth/register")
+      .send({ name: "Marina Albuquerque", email: "  Marina@Exemplo.com ", phone: "(11) 98822-4410", password: PASSWORD, acceptTerms: true })
+      .expect(201);
+    const cookie = String(res.headers["set-cookie"]);
+    expect(cookie).toContain("vq_session=");
+    expect(cookie).toContain("HttpOnly");
+    expect(cookie).toContain("SameSite=Lax");
+
+    const user = await t.prisma.user.findUniqueOrThrow({ where: { email: "marina@exemplo.com" } });
+    expect(user.passwordHash.startsWith("scrypt$")).toBe(true);
+    expect(user.passwordHash).not.toContain(PASSWORD);
+
+    const me = await agent.get("/api/auth/me").expect(200);
+    expect(me.body.accountState).toEqual("EMAIL_VERIFICATION");
+    expect(me.body.user.passwordHash).toBeUndefined();
+
+    const blocked = await agent.post("/api/organizations").send({ name: "Estúdio Pixel Norte", type: "PJ", document: CNPJS[0], segment: "ONLINE" }).expect(403);
+    expect(blocked.body.error.code).toEqual("email_nao_verificado");
+
+    const token = extract(await lastMessage(t.prisma, "marina@exemplo.com"), /verificar-email\?token=([\w-]+)/);
+    await agent.post("/api/auth/email/verify").send({ token }).expect(200);
+    // O link só vale uma vez.
+    await agent.post("/api/auth/email/verify").send({ token }).expect(400);
+
+    const pending = await agent.get("/api/auth/me").expect(200);
+    expect(pending.body.accountState).toEqual("PENDING");
+
+    await agent.post("/api/organizations").send({ name: "Estúdio Pixel Norte", type: "PJ", document: CNPJS[0], segment: "ONLINE" }).expect(201);
+    const after = await agent.get("/api/auth/me").expect(200);
+    expect(after.body.accountState).toEqual("KYC_PENDING");
+    expect(after.body.memberships).toHaveLength(1);
+    expect(after.body.memberships[0].role).toEqual("OWNER");
+    expect(after.body.memberships[0].organization.document).toEqual("**.222.333/****-**");
+  });
+
+  it("não aceita o mesmo e-mail duas vezes nem o mesmo documento em duas organizações", async () => {
+    const dup = await t
+      .browser()
+      .post("/api/auth/register")
+      .send({ name: "Outra Marina", email: "marina@exemplo.com", phone: "(11) 98822-4411", password: PASSWORD, acceptTerms: true })
+      .expect(409);
+    expect(dup.body.error.code).toEqual("email_em_uso");
+
+    const bruno = await signUp(t, "Bruno Tavares", "bruno@exemplo.com");
+    const sameDoc = await bruno.agent.post("/api/organizations").send({ name: "Cópia", type: "PJ", document: CNPJS[0], segment: "ONLINE" }).expect(409);
+    expect(sameDoc.body.error.code).toEqual("documento_em_uso");
+
+    const badDoc = await bruno.agent.post("/api/organizations").send({ name: "Loja", type: "PJ", document: "11.222.333/0001-82", segment: "ONLINE" }).expect(400);
+    expect(badDoc.body.error.param).toEqual("document");
+    // CPF válido não serve para pessoa jurídica.
+    await bruno.agent.post("/api/organizations").send({ name: "Loja", type: "PJ", document: "529.982.247-25", segment: "ONLINE" }).expect(400);
+    await bruno.agent.post("/api/organizations").send({ name: "Bruno Serviços", type: "PF", document: "529.982.247-25", segment: "LOCAL" }).expect(201);
+  });
+
+  it("faz login e logout, e a sessão encerrada deixa de valer", async () => {
+    const agent = t.browser();
+    const wrong = await agent.post("/api/auth/login").send({ email: "marina@exemplo.com", password: "errada123" }).expect(401);
+    expect(wrong.body.error.code).toEqual("credenciais_invalidas");
+    // Mesma resposta para e-mail que não existe.
+    const unknown = await agent.post("/api/auth/login").send({ email: "ninguem@exemplo.com", password: "errada123" }).expect(401);
+    expect(unknown.body.error).toEqual(wrong.body.error);
+
+    const ok = await agent.post("/api/auth/login").send({ email: "MARINA@exemplo.com", password: PASSWORD }).expect(200);
+    expect(ok.body).toEqual({ twoFactorRequired: false });
+    await agent.get("/api/auth/me").expect(200);
+    await agent.post("/api/auth/logout").expect(200);
+    await agent.get("/api/auth/me").expect(401);
+  });
+
+  it("recusa requisições de escrita vindas de outra origem", async () => {
+    const res = await t.browser().post("/api/auth/login").set("Origin", "https://site-malicioso.exemplo").send({ email: "marina@exemplo.com", password: PASSWORD }).expect(403);
+    expect(res.body.error.code).toEqual("origem_nao_permitida");
+    await t.browser().post("/api/auth/login").set("Origin", "http://localhost:5173").send({ email: "marina@exemplo.com", password: PASSWORD }).expect(200);
+  });
+
+  it("bloqueia a conta por 15 minutos depois de 5 senhas erradas", async () => {
+    await signUp(t, "Carla Nogueira", "carla@exemplo.com");
+    const agent = t.browser();
+    for (let i = 0; i < 5; i++) await agent.post("/api/auth/login").send({ email: "carla@exemplo.com", password: "errada123" }).expect(401);
+    const locked = await agent.post("/api/auth/login").send({ email: "carla@exemplo.com", password: PASSWORD }).expect(429);
+    expect(locked.body.error.code).toEqual("conta_bloqueada");
+    expect(Number(locked.headers["retry-after"])).toBeGreaterThan(0);
+  });
+
+  it("recupera a senha sem revelar se o e-mail existe, usa o link uma vez e encerra as sessões abertas", async () => {
+    const diego = await signUp(t, "Diego Rezende", "diego@exemplo.com");
+    const visitor = t.browser();
+    const a = await visitor.post("/api/auth/password/forgot").send({ email: "diego@exemplo.com" }).expect(200);
+    const b = await visitor.post("/api/auth/password/forgot").send({ email: "ninguem@exemplo.com" }).expect(200);
+    expect(a.body).toEqual(b.body);
+    expect(await t.prisma.outboxMessage.count({ where: { recipient: "ninguem@exemplo.com" } })).toEqual(0);
+
+    const token = extract(await lastMessage(t.prisma, "diego@exemplo.com"), /redefinir-senha\?token=([\w-]+)/);
+    await visitor.post("/api/auth/password/reset").send({ token, password: "fraca" }).expect(400);
+    await visitor.post("/api/auth/password/reset").send({ token, password: "NovaSenha2026" }).expect(200);
+    await visitor.post("/api/auth/password/reset").send({ token, password: "OutraSenha2026" }).expect(400);
+
+    // A sessão que estava aberta antes da troca deixou de valer.
+    await diego.agent.get("/api/auth/me").expect(401);
+    await visitor.post("/api/auth/login").send({ email: "diego@exemplo.com", password: PASSWORD }).expect(401);
+    await visitor.post("/api/auth/login").send({ email: "diego@exemplo.com", password: "NovaSenha2026" }).expect(200);
+  });
+
+  it("confirma o telefone por código e limita as tentativas", async () => {
+    const eva = await signUp(t, "Eva Pacheco", "eva@exemplo.com");
+    await eva.agent.post("/api/auth/phone/send").expect(200);
+    const user = await t.prisma.user.findUniqueOrThrow({ where: { email: "eva@exemplo.com" } });
+    const code = extract(await lastMessage(t.prisma, user.phone), /código de confirmação é (\d{6})/);
+    const wrong = code === "000000" ? "111111" : "000000";
+    const bad = await eva.agent.post("/api/auth/phone/verify").send({ code: wrong }).expect(400);
+    expect(bad.body.error.code).toEqual("codigo_incorreto");
+    await eva.agent.post("/api/auth/phone/verify").send({ code }).expect(200);
+    const me = await eva.agent.get("/api/auth/me").expect(200);
+    expect(me.body.user.phoneVerified).toBe(true);
+  });
+
+  it("ativa o 2FA, exige o código no login seguinte e aceita cada código de recuperação uma única vez", async () => {
+    const fabio = await signUp(t, "Fábio Monteiro", "fabio@exemplo.com");
+    const setup = await fabio.agent.post("/api/account/2fa/setup").expect(200);
+    expect(setup.body.otpauthUri).toContain("otpauth://totp/VELQYRO%20PAY");
+    const secret = setup.body.secret as string;
+
+    // O segredo fica cifrado no banco.
+    const stored = await t.prisma.twoFactorMethod.findFirstOrThrow({ where: { user: { email: "fabio@exemplo.com" } } });
+    expect(stored.secretEncrypted).not.toContain(secret);
+
+    await fabio.agent.post("/api/account/2fa/enable").send({ code: "000000" }).expect(400);
+    const enabled = await fabio.agent.post("/api/account/2fa/enable").send({ code: totp(secret) }).expect(200);
+    const recoveryCodes = enabled.body.recoveryCodes as string[];
+    expect(recoveryCodes).toHaveLength(8);
+
+    const agent = t.browser();
+    const login = await agent.post("/api/auth/login").send({ email: "fabio@exemplo.com", password: PASSWORD }).expect(200);
+    expect(login.body).toEqual({ twoFactorRequired: true });
+
+    // Com o segundo fator pendente, só as rotas de login respondem.
+    const pending = await agent.get("/api/organizations").expect(401);
+    expect(pending.body.error.code).toEqual("verificacao_2fa_pendente");
+    const me = await agent.get("/api/auth/me").expect(200);
+    expect(me.body.session.twoFactorPending).toBe(true);
+
+    await agent.post("/api/auth/2fa/verify").send({ code: "000000" }).expect(400);
+    await agent.post("/api/auth/2fa/verify").send({ code: totp(secret) }).expect(200);
+    await agent.get("/api/organizations").expect(200);
+
+    // Código de recuperação: vale uma vez.
+    const second = t.browser();
+    await second.post("/api/auth/login").send({ email: "fabio@exemplo.com", password: PASSWORD }).expect(200);
+    await second.post("/api/auth/2fa/verify").send({ recoveryCode: recoveryCodes[0].toLowerCase() }).expect(200);
+    const third = t.browser();
+    await third.post("/api/auth/login").send({ email: "fabio@exemplo.com", password: PASSWORD }).expect(200);
+    await third.post("/api/auth/2fa/verify").send({ recoveryCode: recoveryCodes[0] }).expect(400);
+    const status = await second.get("/api/account/2fa").expect(200);
+    expect(status.body).toEqual({ enabled: true, recoveryCodesLeft: 7 });
+
+    // Cinco códigos errados encerram a sessão pendente.
+    const attacker = t.browser();
+    await attacker.post("/api/auth/login").send({ email: "fabio@exemplo.com", password: PASSWORD }).expect(200);
+    for (let i = 0; i < 4; i++) await attacker.post("/api/auth/2fa/verify").send({ code: "000000" }).expect(400);
+    const closed = await attacker.post("/api/auth/2fa/verify").send({ code: "000000" }).expect(401);
+    expect(closed.body.error.code).toEqual("sessao_encerrada");
+    await attacker.get("/api/auth/me").expect(401);
+
+    // Desativar exige senha e código.
+    await second.post("/api/account/2fa/disable").send({ password: "errada123", code: totp(secret) }).expect(400);
+    await second.post("/api/account/2fa/disable").send({ password: PASSWORD, code: totp(secret) }).expect(200);
+    const off = await t.browser().post("/api/auth/login").send({ email: "fabio@exemplo.com", password: PASSWORD }).expect(200);
+    expect(off.body).toEqual({ twoFactorRequired: false });
+  });
+
+  it("lista as sessões, encerra as outras e troca a senha", async () => {
+    const gabi = await signUp(t, "Gabriela Duarte", "gabi@exemplo.com");
+    const phone = t.browser();
+    await phone.post("/api/auth/login").send({ email: "gabi@exemplo.com", password: PASSWORD }).expect(200);
+
+    const list = await gabi.agent.get("/api/account/sessions").expect(200);
+    expect(list.body.sessions).toHaveLength(2);
+    expect(list.body.sessions.filter((s: { current: boolean }) => s.current)).toHaveLength(1);
+    const other = list.body.sessions.find((s: { current: boolean }) => !s.current);
+
+    // Não dá para encerrar a sessão de outra pessoa adivinhando o ID.
+    const helio = await signUp(t, "Hélio Brandão", "helio@exemplo.com");
+    await helio.agent.delete(`/api/account/sessions/${other.id}`).expect(404);
+
+    await gabi.agent.delete(`/api/account/sessions/${other.id}`).expect(200);
+    await phone.get("/api/auth/me").expect(401);
+
+    await phone.post("/api/auth/login").send({ email: "gabi@exemplo.com", password: PASSWORD }).expect(200);
+    await gabi.agent.post("/api/account/password").send({ currentPassword: "errada123", newPassword: "NovaSenha2026" }).expect(400);
+    const changed = await gabi.agent.post("/api/account/password").send({ currentPassword: PASSWORD, newPassword: "NovaSenha2026" }).expect(200);
+    expect(changed.body.sessionsEnded).toEqual(1);
+    await phone.get("/api/auth/me").expect(401);
+    await gabi.agent.get("/api/auth/me").expect(200);
+  });
+
+  it("atualiza o perfil e pede nova confirmação quando o telefone muda", async () => {
+    const iara = await signUp(t, "Iara Freitas", "iara@exemplo.com");
+    await createOrganization(iara, "Iara Decor", CNPJS[1]);
+    await iara.agent.post("/api/auth/phone/send").expect(200);
+    const before = await t.prisma.user.findUniqueOrThrow({ where: { email: "iara@exemplo.com" } });
+    const code = extract(await lastMessage(t.prisma, before.phone), /código de confirmação é (\d{6})/);
+    await iara.agent.post("/api/auth/phone/verify").send({ code }).expect(200);
+
+    await iara.agent.patch("/api/account").send({ name: "Iara Freitas Lima", phone: "(21) 97777-0001" }).expect(200);
+    const me = await iara.agent.get("/api/auth/me").expect(200);
+    expect(me.body.user.name).toEqual("Iara Freitas Lima");
+    expect(me.body.user.phone).toEqual("21977770001");
+    expect(me.body.user.phoneVerified).toBe(false);
+  });
+});
