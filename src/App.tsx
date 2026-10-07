@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react";
 import Auth, { AuthView } from "./Auth";
+import Products from "./Products";
 import {
   BadgeDollarSign,
   Boxes,
@@ -63,6 +64,7 @@ function Brand() {
 export default function App() {
   const [authenticated, setAuthenticated] = useState(false);
   const [authView, setAuthView] = useState<AuthView>("login");
+  const [page, setPage] = useState("Visão geral");
   const bars = useMemo(
     () => [35, 48, 42, 62, 50, 67, 57, 76, 64, 71, 58, 83, 73, 91, 66, 80, 72, 88],
     []
@@ -78,7 +80,7 @@ export default function App() {
         <Brand />
         <nav>
           {navItems.map(([label, Icon], index) => (
-            <button className={index === 0 ? "nav-item active" : "nav-item"} key={label}>
+            <button onClick={() => (label === "Visão geral" || label === "Produtos") && setPage(label)} className={page === label ? "nav-item active" : "nav-item"} key={label}>
               <Icon size={18} />
               <span>{label}</span>
             </button>
@@ -93,6 +95,7 @@ export default function App() {
       </aside>
 
       <section className="content">
+        {page === "Produtos" ? <Products /> : <>
         <header className="topbar">
           <div>
             <p className="eyebrow">VELQYRO PAY</p>
@@ -189,6 +192,7 @@ export default function App() {
             </table>
           </div>
         </section>
+        </>}
       </section>
     </main>
   );
