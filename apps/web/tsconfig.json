@@ -14,8 +14,10 @@
     "resolveJsonModule": true,
     "isolatedModules": true,
     "noEmit": true,
-    "jsx": "react-jsx"
+    "jsx": "react-jsx",
+    "paths": {
+      "@velqyro/shared": ["../../packages/shared/src/index.ts"]
+    }
   },
-  "include": ["src"],
-  "references": []
+  "include": ["src"]
 }
